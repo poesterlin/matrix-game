@@ -1,0 +1,43 @@
+menu "RF LED matrix settings"
+
+config RF_INPUT_GPIO
+    int "433 MHz receiver data GPIO"
+    default 7
+    range 0 48
+
+config LED_DATA_GPIO
+    int "LED matrix data GPIO"
+    default 2
+    range 0 48
+
+config LED_MATRIX_WIDTH
+    int "LED matrix width"
+    default 32
+    range 1 256
+
+config LED_MATRIX_HEIGHT
+    int "LED matrix height"
+    default 8
+    range 1 256
+
+config LED_BRIGHTNESS
+    int "Initial LED brightness percent"
+    default 20
+    range 0 100
+
+config RF_CAPTURE_SYMBOLS
+    int "Maximum RF pulse pairs per capture"
+    default 128
+    range 8 512
+
+config RF_PULSE_MIN_US
+    int "RF pulse glitch filter (microseconds)"
+    default 1
+    range 1 100000
+
+config RF_PULSE_MAX_US
+    int "RF frame end timeout (microseconds)"
+    default 10000
+    range 100 1000000
+
+endmenu
