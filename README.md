@@ -1,110 +1,78 @@
-# RF LED Matrix
+# Press-and-See Light Game
 
-Standalone ESP-IDF firmware for a 433 MHz RF receiver and a WS281x LED matrix
-on the Seeed Studio XIAO ESP32-S3.
+A simple light game for a two-year-old: press a 433 MHz button, watch a light wave on a 32×8 LED matrix.
 
-## Status
+Runs on a Seeed Studio XIAO ESP32-S3.
 
-The LED output is configured for the supplied WLED setup: 256 WS281x pixels,
-GRB order, GPIO 2, and a 32×8 vertical serpentine matrix with the first pixel
-at the top-left. Firmware brightness is limited to 20%. The RF input captures raw pulse widths from a 433 MHz receiver;
-protocol decoding is intentionally separate because the transmitter protocol
-has not yet been identified.
+## How to Play
 
-The built-in demo animates the matrix and uses the top-left pixel as the RF
-indicator: dim red means idle, and green means a valid multi-pulse RF frame was
-captured in the last second. Each accepted frame also triggers a rate-limited,
-bright expanding wave.
+1. Child presses the big button.
+2. Lights wave across the matrix.
+3. Repeat.
 
-The active `sdkconfig` is the single source of GPIO assignments. The committed
-target profiles provide the board target and baseline flash settings.
+No score, no losing. Just action and reaction.
 
-## Requirements
+Status LED (top-left): **green** = signal received; **dim red** = waiting.
 
-- ESP-IDF 6.0.x; ESP-IDF 6.0.2 is the known version
-- CMake and the ESP-IDF toolchain
-- Seeed Studio XIAO ESP32-S3
-- 256-pixel WS281x matrix and an external 5 V supply rated for at least 15 A
-- 433 MHz receiver with a 3.3 V-safe digital data output
+## Games
 
-Load ESP-IDF in each new shell:
+| Game | What the child does | What the lights do |
+|---|---|---|
+| Button Wave | Press the button | A wave moves across the matrix |
+| Rainbow Press | Press the button again | The wave starts with a new color |
+| Big and Small | Press once or press many times | The lights show different wave sizes |
+| Find the Light | Look for the bright light | One bright light moves across the matrix |
+| Stop and Go | Press to start and press again to stop | The rainbow starts or stops |
+| Count the Waves | Press and count | One wave appears for each press |
 
-```bash
-. ~/esp/esp-idf/export.sh
-idf.py --version
-```
+**Button Wave** is the current game. The other games are ideas for future
+animations.
 
-The version must report ESP-IDF 6.0.x.
+## Safety
+
+- Adult builds, powers, and tests everything.
+- Keep power supply, wires, and boards away from the child.
+- Secure the LED matrix.
+- Use a large transmitter with no small removable parts.
+- Supervise during play.
+
+## Wiring
+
+| Signal | Pin |
+|---|---|
+| LED data | GPIO 2 |
+| RF receiver data | GPIO 7 |
+| LED power | External 5 V (≥15 A) |
+| Ground | Common between all devices |
+
+Use a logic-level buffer on LED data if your matrix needs 5 V logic. Verify RF output is 3.3 V safe.
 
 ## Build
 
-Select the target, then build:
+Requires ESP-IDF 6.0.x.
 
 ```bash
+. ~/esp/esp-idf/export.sh
 ./switch-target.sh
 idf.py build
-```
-
-The project is fixed to the ESP32-S3. The committed profile is a baseline and
-must be regenerated with `menuconfig` after you confirm the physical board's
-flash size and RF input pin.
-
-Flash and monitor with the board's actual serial device:
-
-```bash
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-Exit the monitor with `Ctrl+]`.
-
 ## Configuration
 
-Open `idf.py menuconfig` and review the **RF LED matrix settings** menu:
+```bash
+idf.py menuconfig
+```
 
-- RF receiver data GPIO (GPIO 7)
-- LED matrix data GPIO (GPIO 2)
-- matrix width and height (32×8)
-- LED brightness limit
-- RF pulse capture limits
+Review **RF LED matrix settings** for GPIOs, matrix size, brightness limit (default 20%), and RF capture limits.
 
-The RF GPIO default is a placeholder. Confirm it against the board pinout, and
-do not use boot-strapping, USB, flash, or otherwise reserved pins. GPIO 2 is
-the LED data pin from the supplied WLED configuration.
+## Hardware Record
 
-## Hardware record
-
-Fill this table before connecting hardware. It is the source of truth for pin,
-power, and driver decisions.
-
-| Item | Selected value |
+| Item | Value |
 |---|---|
-| ESP32 board | |
-| ESP32 target | `esp32s3` |
-| Flash size | 8 MB profile; verify the board |
-| RF receiver model | |
-| RF receiver supply | |
-| RF data voltage | |
-| RF input GPIO | GPIO 7 |
-| RF protocol | |
-| LED panel model | WS281x |
-| LED interface | serial pixel |
-| Matrix dimensions | 32 × 8 = 256 |
-| Pixel order | GRB |
-| LED data GPIO | GPIO 2 |
-| LED supply voltage | 5 V |
-| LED supply current rating | 15 A minimum |
-| Logic-level buffer | |
-| Maximum firmware brightness | 20% |
-
-## Safety and bring-up
-
-Power the matrix from a separate regulated supply, connect its ground to the
-ESP32 ground, and verify the RF data signal never exceeds 3.3 V. Many 5 V LED
-panels need a 3.3 V-to-5 V logic buffer. Start with low brightness.
-
-Bring up the system in separate steps: verify one low-brightness LED color,
-verify the serpentine corners, then capture raw RF frames. The RMT callback only
-queues completed captures; pulse inspection and later protocol decoding run in
-the RF task.
-
-See [docs.md](docs.md) for the complete design and verification checklist.
+| Board | Seeed Studio XIAO ESP32-S3 |
+| RF receiver GPIO | 7 |
+| LED data GPIO | 2 |
+| Matrix | 32×8 GRB, serpentine |
+| LED supply | 5 V, ≥15 A |
+| Max brightness | 20% |

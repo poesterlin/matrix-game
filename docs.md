@@ -1,594 +1,310 @@
-# ESP32 Firmware Project Setup
+# Press-and-See Light Game
 
-This guide defines a standalone ESP-IDF project for a 433 MHz RF receiver and an
-addressable LED matrix. It supports the Seeed Studio XIAO ESP32-C6 and XIAO ESP32-S3.
+This project is a cause-and-effect light game for a two-year-old.
 
-> **Current project profile:** This repository now targets the XIAO ESP32-S3 only.
-> The connected matrix is 256 WS281x pixels on GPIO 2, using GRB order and a
-> 32×8 vertical serpentine layout with the first pixel at the top-left. The
-> firmware uses Espressif's native `led_strip` RMT driver and the ESP-IDF RMT RX
-> driver for raw 433 MHz pulse capture. The older C6/profile examples below are
-> retained as general reference but are not part of the active project setup.
+The child presses a 433 MHz transmitter button. The LED matrix responds with a
+bright moving wave. The child can repeat the action as often as they want.
 
-The guide covers the project structure, build environment, target profiles, source layout,
-hardware boundaries, task design, and first tests. It does not require another codebase.
+The game has no score, timer, or losing state. It gives the child one clear
+action and one clear result.
 
-## 1. System design
+An adult must build, power, test, and supervise the game.
 
-The firmware has two independent input and output paths:
+## Play instructions
+
+Use these instructions with the child:
+
+1. Hold the button.
+2. Press the button.
+3. Look at the lights.
+4. Press the button again.
+
+Use short words such as “press,” “look,” and “again.” Let the child control the
+pace. Do not require the child to press the button in a particular way.
+
+The matrix shows a rainbow while it waits. A valid button signal starts a bright
+expanding wave. The top-left LED turns green for one second after a valid signal.
+
+## Game list
+
+Use one game at a time. Start with **Button Wave** because it has the simplest
+action and result.
+
+| Game | Child action | Matrix response |
+|---|---|---|
+| Button Wave | Press the button | A wave moves across the matrix |
+| Rainbow Press | Press the button again | The wave starts with a new color |
+| Big and Small | Press once or press many times | The lights show different wave sizes |
+| Find the Light | Look for the bright light | One bright light moves across the matrix |
+| Stop and Go | Press to start and press again to stop | The rainbow starts or stops |
+| Count the Waves | Press and count | One wave appears for each press |
+
+Only **Button Wave** is implemented in the current firmware. The other games
+are animation ideas for later versions.
+
+## Child safety
+
+Complete these checks before play:
+
+1. Put the power supply where the child cannot reach it.
+2. Cover the ESP32-S3, receiver, connectors, and exposed wires.
+3. Secure the matrix to a wall, frame, or table.
+4. Use a transmitter with a large sealed case.
+5. Remove loose batteries and small parts from the play area.
+6. Check the matrix and wires before each play session.
+7. Stay with the child during play.
+
+The 20% firmware brightness limit reduces LED power use. It does not make an
+unsafe power supply, wire, enclosure, or battery safe.
+
+## Current hardware profile
+
+| Item | Value |
+|---|---|
+| MCU | ESP32-S3 |
+| Flash | 8 MB |
+| LED type | WS281x |
+| LED count | 256 |
+| Matrix size | 32 × 8 |
+| Color order | GRB |
+| Matrix layout | Vertical serpentine |
+| First LED | Top-left |
+| LED data | GPIO 2 |
+| RF receiver | 433 MHz digital receiver |
+| RF data | GPIO 7 |
+| Firmware brightness limit | 20% |
+
+The LED matrix needs a separate regulated 5 V power supply. The supply shown in
+the WLED setup is rated for at least 15 A. Connect the supply ground to the
+ESP32-S3 ground.
+
+## Demo behavior
+
+The firmware starts a rainbow animation when the board boots.
+
+The RF receiver captures raw pulse lengths. It does not decode a remote-control
+protocol yet. A valid multi-pulse frame must contain at least three RMT symbols.
+The firmware accepts one frame trigger at most every 100 ms.
+
+Each accepted RF frame causes a bright expanding wave on the matrix. The
+top-left LED shows receiver state:
+
+- Dim red: no valid RF frame arrived during the last second.
+- Green: a valid RF frame arrived during the last second.
+
+The receiver task also logs the first pulse widths and the total frame length.
+Use these logs to identify the transmitter protocol later.
+
+## Wiring
+
+Connect the hardware as follows:
+
+| Device pin | ESP32-S3 connection |
+|---|---|
+| WS281x data input | GPIO 2 |
+| 433 MHz receiver data output | GPIO 7 |
+| WS281x ground | Common ground |
+| Receiver ground | Common ground |
+
+Use the voltage required by the receiver module. The receiver data output must
+not exceed 3.3 V. Add a level shifter or divider when the receiver produces a
+5 V signal.
+
+Many WS281x strips work more reliably with a 5 V logic-level data signal. Add a
+3.3 V-to-5 V logic buffer when the matrix requires it. Keep the data wire short.
+
+Do not power the matrix from the ESP32-S3 3.3 V output.
+
+## Software structure
+
+The application has three main parts:
+
+| File | Responsibility |
+|---|---|
+| `main/app_main.c` | Starts the matrix, receiver, and demo |
+| `main/led_matrix.c` | Maps matrix coordinates and drives WS281x pixels |
+| `main/rf_receiver.c` | Captures and logs raw RF pulses |
+
+The LED code uses Espressif's `led_strip` component with the ESP-IDF RMT TX
+driver. It does not use FastLED.
+
+The RF code uses the ESP-IDF RMT RX driver. The RMT clock runs at 1 MHz, so
+captured durations are reported in microseconds. The receiver uses a 1 µs
+minimum pulse filter and a 10 ms frame-end timeout.
+
+The LED task owns the LED buffer. The RF task does not write to the LED driver.
+The RF callback only places completed captures on a queue.
+
+## Matrix mapping
+
+The physical matrix is wired as vertical columns. Even columns run from top to
+bottom. Odd columns run from bottom to top.
+
+For a logical coordinate `(x, y)`, the firmware uses:
 
 ```text
-433 MHz receiver -> GPIO edges -> pulse buffer -> RF decoder task
-                                                     |
-                                                     v
-                                                command queue
-                                                     |
-                                                     v
-LED power supply -> LED matrix <- LED driver <- LED task
+physical_y = y                    when x is even
+physical_y = height - 1 - y        when x is odd
+index = x * height + physical_y
 ```
 
-The GPIO interrupt records pulse timing. The RF decoder task validates a complete RF
-message. It then sends a command to the LED task. The LED task owns the pixel buffer and
-the LED driver.
+This mapping matches the WLED settings: first LED at the top-left, vertical
+orientation, and serpentine enabled.
 
-This design prevents a slow LED update from blocking RF pulse capture.
+## Install ESP-IDF
 
-## 2. Supported development setup
+Use ESP-IDF 6.0.x. ESP-IDF 6.0.2 is the tested version.
 
-Use this setup:
-
-- ESP-IDF 6.0.x
-- ESP-IDF 6.0.2 as the known version
-- C source files
-- CMake through ESP-IDF
-- FreeRTOS tasks and queues from ESP-IDF
-- USB serial output at 115200 baud
-- a separate configuration profile for each ESP32 target
-- DIO flash mode at 80 MHz
-
-The known boards have these differences:
-
-| Board | CPU architecture | Typical flash size | Bluetooth support |
-|---|---|---:|---|
-| XIAO ESP32-C6 | RISC-V | 4 MB | Bluetooth LE available |
-| XIAO ESP32-S3 | Xtensa | 8 MB | Bluetooth LE available, but not required |
-
-Confirm the flash size on the exact board before you create its profile.
-
-## 3. Install ESP-IDF
-
-Install ESP-IDF 6.0.2 in `~/esp/esp-idf`. The normal Espressif installation creates the
-export script used below.
-
-Load the tools in each new shell:
+Load the ESP-IDF environment in each new shell:
 
 ```bash
 . ~/esp/esp-idf/export.sh
 idf.py --version
 ```
 
-The version command must report ESP-IDF 6.0.x. Do not use an ESP-IDF 6.1 development
-snapshot with these configuration profiles.
+The version command must report ESP-IDF 6.0.x.
 
-## 4. Create the project
+## Build
 
-Create this directory structure:
-
-```text
-rf-led-matrix/
-├── .gitignore
-├── CMakeLists.txt
-├── README.md
-├── sdkconfig.defaults
-├── sdkconfig.esp32c6
-├── sdkconfig.esp32s3
-├── switch-target.sh
-└── main/
-    ├── CMakeLists.txt
-    ├── Kconfig.projbuild
-    ├── app_main.c
-    ├── board_config.h
-    ├── rf_receiver.c
-    ├── rf_receiver.h
-    ├── led_matrix.c
-    └── led_matrix.h
-```
-
-ESP-IDF creates these files and directories. Do not commit them:
-
-```gitignore
-build/
-.cache/
-sdkconfig
-sdkconfig.old
-```
-
-Commit `sdkconfig.defaults`, `sdkconfig.esp32c6`, and `sdkconfig.esp32s3`.
-
-## 5. Add the root CMake file
-
-Create `CMakeLists.txt` in the project root:
-
-```cmake
-cmake_minimum_required(VERSION 3.16)
-
-include($ENV{IDF_PATH}/tools/cmake/project.cmake)
-project(rf_led_matrix)
-```
-
-`project(rf_led_matrix)` sets the application and binary name.
-
-## 6. Add the main component
-
-Create `main/CMakeLists.txt`:
-
-```cmake
-idf_component_register(
-    SRCS
-        "app_main.c"
-        "rf_receiver.c"
-        "led_matrix.c"
-    INCLUDE_DIRS "."
-    REQUIRES
-        esp_driver_gpio
-)
-```
-
-Add `esp_driver_rmt` if the RF or LED implementation uses the ESP-IDF RMT driver. Add
-`esp_driver_spi` only if the selected LED driver uses SPI.
-
-Do not add Wi-Fi, Bluetooth, JSON, TLS, HTTP, or WebSocket components unless the application
-needs them.
-
-### Managed components
-
-Some LED drivers use the ESP-IDF Component Manager. If the selected driver uses it, create
-`main/idf_component.yml` and add that driver's documented dependency. For example, use the
-driver's exact package name and supported version range:
-
-```yaml
-dependencies:
-  idf: '>=6.0,<6.1'
-  vendor/component_name: '^1.0.0'
-```
-
-Run `idf.py reconfigure` after you change the manifest. ESP-IDF downloads the component and
-creates `dependencies.lock` and `managed_components/`. Commit `dependencies.lock`. Follow
-the team's policy for `managed_components/`. It can be generated again from the lock file.
-
-## 7. Add project settings
-
-Create `main/Kconfig.projbuild`:
-
-```kconfig
-menu "RF LED matrix settings"
-
-config RF_INPUT_GPIO
-    int "433 MHz receiver data GPIO"
-    default 2
-
-config LED_DATA_GPIO
-    int "LED matrix data GPIO"
-    default 3
-
-config LED_MATRIX_WIDTH
-    int "LED matrix width"
-    default 16
-    range 1 256
-
-config LED_MATRIX_HEIGHT
-    int "LED matrix height"
-    default 16
-    range 1 256
-
-config LED_BRIGHTNESS
-    int "Initial LED brightness percent"
-    default 10
-    range 0 100
-
-endmenu
-```
-
-The GPIO defaults are placeholders. Replace them after you check the board pinout and the
-panel interface. Do not assign a boot strap pin, USB pin, flash pin, or another reserved pin.
-
-Open these settings with:
+From the project directory, select the ESP32-S3 profile and build:
 
 ```bash
-idf.py menuconfig
-```
-
-Application code reads the values as `CONFIG_RF_INPUT_GPIO`, `CONFIG_LED_DATA_GPIO`,
-`CONFIG_LED_MATRIX_WIDTH`, `CONFIG_LED_MATRIX_HEIGHT`, and `CONFIG_LED_BRIGHTNESS`.
-
-## 8. Add the source interfaces
-
-Create `main/rf_receiver.h`:
-
-```c
-#pragma once
-
-#include "esp_err.h"
-
-esp_err_t rf_receiver_init(void);
-```
-
-Create `main/led_matrix.h`:
-
-```c
-#pragma once
-
-#include <stdint.h>
-
-#include "esp_err.h"
-
-esp_err_t led_matrix_init(void);
-esp_err_t led_matrix_fill(uint8_t red, uint8_t green, uint8_t blue);
-```
-
-Create `main/app_main.c`:
-
-```c
-#include "esp_err.h"
-#include "esp_log.h"
-
-#include "led_matrix.h"
-#include "rf_receiver.h"
-
-static const char *TAG = "rf_led_matrix";
-
-void app_main(void) {
-	ESP_LOGI(TAG, "starting firmware");
-	ESP_ERROR_CHECK(led_matrix_init());
-	ESP_ERROR_CHECK(rf_receiver_init());
-	ESP_LOGI(TAG, "startup complete");
-}
-```
-
-Create `rf_receiver.c` and `led_matrix.c` with temporary functions that return `ESP_OK`.
-This lets you verify the project before you add hardware code.
-
-`main/board_config.h` can contain target-specific pin aliases when both boards use the same
-silkscreen labels but different GPIO numbers:
-
-```c
-#pragma once
-
-#include "driver/gpio.h"
-
-#if CONFIG_IDF_TARGET_ESP32C6
-// Replace these values with checked XIAO ESP32-C6 GPIO numbers.
-#define BOARD_RF_INPUT_GPIO GPIO_NUM_2
-#define BOARD_LED_DATA_GPIO GPIO_NUM_3
-#elif CONFIG_IDF_TARGET_ESP32S3
-// Replace these values with checked XIAO ESP32-S3 GPIO numbers.
-#define BOARD_RF_INPUT_GPIO GPIO_NUM_2
-#define BOARD_LED_DATA_GPIO GPIO_NUM_3
-#else
-#error "Unsupported ESP32 target"
-#endif
-```
-
-Use either Kconfig GPIO values or `board_config.h`. Do not keep two sources for the same pin
-assignment. Kconfig is easier to change without editing code. A board header gives stricter
-compile-time mappings.
-
-## 9. Create the default configuration
-
-Create `sdkconfig.defaults`:
-
-```ini
-CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
-CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
-CONFIG_ESP_CONSOLE_SECONDARY_USB_SERIAL_JTAG=y
-```
-
-Keep this file limited to settings that apply to both boards. Set the flash size and other
-chip-specific values in each target profile.
-
-The project does not need a custom partition table for a local RF and LED application. Use
-the ESP-IDF default single-application table until the application needs OTA updates or a
-large data partition.
-
-## 10. Create target profiles
-
-Create the ESP32-C6 profile:
-
-```bash
-. ~/esp/esp-idf/export.sh
-idf.py set-target esp32c6
-idf.py menuconfig
-cp sdkconfig sdkconfig.esp32c6
-```
-
-Set these values in `menuconfig`:
-
-- flash size: 4 MB, or the actual board flash size
-- flash mode: DIO
-- flash frequency: 80 MHz
-- console baud rate: 115200
-- secondary console: USB Serial/JTAG
-- partition table: single factory application
-- Bluetooth: disabled unless the application needs it
-- Wi-Fi: disabled unless the application needs it
-
-Create the ESP32-S3 profile:
-
-```bash
-idf.py set-target esp32s3
-idf.py menuconfig
-cp sdkconfig sdkconfig.esp32s3
-```
-
-Use the same settings, but select 8 MB flash if that is the board's actual flash size.
-
-Do not hand-edit generated `sdkconfig` files unless you know the exact Kconfig symbols and
-their dependencies. Use `menuconfig`, test the result, then copy the active file to its
-target profile.
-
-## 11. Add the target switch script
-
-Create `switch-target.sh`:
-
-```bash
-#!/usr/bin/env bash
-set -euo pipefail
-
-TARGET="${1:-}"
-if [ "$TARGET" != "esp32c6" ] && [ "$TARGET" != "esp32s3" ]; then
-	echo "Usage: $0 <esp32c6|esp32s3>"
-	exit 1
-fi
-
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SDKCONFIG_DEST="$SCRIPT_DIR/sdkconfig"
-SDKCONFIG_SRC="$SCRIPT_DIR/sdkconfig.$TARGET"
-
-if [ ! -f "$SDKCONFIG_SRC" ]; then
-	echo "Error: $SDKCONFIG_SRC not found"
-	exit 1
-fi
-
-CURRENT_TARGET=""
-if [ -f "$SDKCONFIG_DEST" ]; then
-	CURRENT_TARGET=$(grep -oP 'CONFIG_IDF_TARGET="\K[^"]+' "$SDKCONFIG_DEST" || true)
-fi
-
-if [ "$CURRENT_TARGET" != "$TARGET" ]; then
-	echo "Switching from '${CURRENT_TARGET:-none}' to '$TARGET'"
-	idf.py set-target "$TARGET"
-	cp "$SDKCONFIG_SRC" "$SDKCONFIG_DEST"
-	idf.py fullclean
-else
-	echo "Already targeting $TARGET"
-	if ! cmp -s "$SDKCONFIG_SRC" "$SDKCONFIG_DEST"; then
-		echo "Restoring $SDKCONFIG_SRC"
-		cp "$SDKCONFIG_SRC" "$SDKCONFIG_DEST"
-		idf.py fullclean
-	fi
-fi
-
-echo "Target: $TARGET"
-echo "Run: idf.py build"
-```
-
-Make it executable:
-
-```bash
-chmod +x switch-target.sh
-```
-
-The script treats each committed target profile as the source of truth. `menuconfig` changes
-only the active `sdkconfig`. Copy tested changes back to the correct profile before you run
-the switch script again.
-
-## 12. Connect the 433 MHz receiver
-
-A common 433 MHz receiver module provides power, ground, and demodulated digital data. The
-ESP32 does not decode the radio carrier. It measures the high and low pulse lengths on the
-data pin.
-
-Before you connect it:
-
-1. Find the module's supply voltage.
-2. Measure or confirm its data-output voltage.
-3. Make sure the ESP32 input never receives more than 3.3 V.
-4. Add a level shifter or divider if the receiver produces 5 V logic.
-5. Connect the receiver ground to the ESP32 ground.
-6. Add the antenna specified for the receiver module.
-
-Do not power a 5 V-only receiver from 3.3 V without checking its data sheet. Do not connect
-a 5 V data output directly to the ESP32.
-
-### RF software rules
-
-Configure the data pin as an input. Select the pull-up or pull-down mode from the receiver's
-idle level. Do not assume that every receiver has the same idle level.
-
-Use a GPIO edge interrupt or an RMT receive channel to measure pulses. If you use a GPIO
-interrupt, apply these rules:
-
-1. Put the interrupt handler in IRAM when the driver requires it.
-2. Read a monotonic timer for each edge.
-3. Store only the edge level and elapsed time.
-4. Send the sample to a fixed queue or ring buffer.
-5. Return from the interrupt immediately.
-6. Decode and log samples in a normal FreeRTOS task.
-
-Start with raw pulse logging. Record several presses from each transmitter button. Determine
-the preamble, bit timing, message length, repeat pattern, and tolerance from those samples.
-Only then implement the decoder.
-
-Reject a message when its pulse count, timing, checksum, or repeated value is invalid. Add
-duplicate suppression if one button press sends the same message many times.
-
-## 13. Identify the LED panel
-
-"Addressable LED matrix" can describe two different interfaces. Identify the connector and
-controller before you select a driver.
-
-### Serial pixels such as WS2812, WS2812B, or SK6812
-
-These panels usually have power, ground, data input, and sometimes data output. They use one
-timed data signal. Use an ESP-IDF 6 compatible RMT LED-strip component.
-
-Check these items:
-
-- LED color order, such as GRB or RGB
-- pixel count
-- matrix width and height
-- row-major or column-major order
-- progressive or serpentine wiring
-- protocol frequency and reset time
-- RGB or RGBW pixel format
-
-The LED driver works with a linear pixel index. Add one coordinate function that maps
-`(x, y)` to that index. Keep all wiring-order logic in this function.
-
-### HUB75 RGB panel
-
-A HUB75 panel has multiple RGB data lines, row-address lines, clock, latch, and output-enable.
-It is not a one-wire addressable panel. Use an ESP-IDF 6 compatible HUB75 DMA driver.
-
-Check the panel scan ratio, connector pinout, width, height, color depth, and required GPIO
-count. Check that the selected driver supports both the chip and ESP-IDF 6.0 before you fix
-the project version.
-
-A HUB75 panel can consume more memory, CPU time, DMA resources, and GPIO pins than a serial
-pixel panel. Confirm that the RF capture method and LED driver do not need the same hardware
-peripheral.
-
-## 14. Power the LED matrix safely
-
-Do not power the matrix from the XIAO 3.3 V pin.
-
-Use these rules:
-
-1. Use a separate regulated supply with the panel's required voltage.
-2. Size the supply for the panel's maximum current.
-3. Connect the panel supply ground to the ESP32 ground.
-4. Inject power at more than one point when the panel maker requires it.
-5. Use wire sized for the expected current.
-6. Add the panel maker's recommended input capacitor.
-7. Add a data-line resistor when the LED or driver documentation recommends it.
-8. Start with a low brightness limit.
-
-For an RGB serial panel, a conservative worst-case estimate is 60 mA per pixel at full white.
-The actual value depends on the LED type, driver, brightness setting, and color. Use the panel
-data sheet or measure the completed panel before you select the final supply.
-
-Many 5 V serial LEDs do not reliably recognize a 3.3 V data-high level. Use a 3.3 V to 5 V
-logic buffer when the LED input threshold requires it. Select a fast buffer intended for
-digital logic. Keep the data wire short.
-
-## 15. Define task ownership
-
-Use these initial tasks:
-
-| Context | Responsibility | Must not do |
-|---|---|---|
-| GPIO ISR or RMT callback | capture RF timing | decode, allocate memory, log, or update LEDs |
-| RF decoder task | validate pulses and create commands | write directly to the LED peripheral |
-| LED task | own pixels and transmit frames | wait for RF pulses in a polling loop |
-
-Use a fixed queue between the decoder and LED tasks. Define a small command structure. For
-example, it can contain a command type, color, brightness, and animation number.
-
-Prefer fixed buffers during RF capture. Define what happens when a queue is full. For the
-first version, count and log dropped messages outside the interrupt.
-
-## 16. Build, flash, and monitor
-
-Load ESP-IDF and select a target:
-
-```bash
-. ~/esp/esp-idf/export.sh
-cd rf-led-matrix
-./switch-target.sh esp32c6
+./switch-target.sh
 idf.py build
 ```
 
-Flash and open the monitor:
+The helper restores `sdkconfig.esp32s3` as the active configuration. The build
+creates the firmware at `build/rf_led_matrix.bin`.
+
+The project uses these managed components:
+
+- `espressif/led_strip` version 3.0.3
+
+ESP-IDF records the exact component versions in `dependencies.lock`.
+
+## Flash the board
+
+Find the serial device assigned to the ESP32-S3. The connected board used
+`/dev/ttyACM0`.
+
+Flash the firmware:
+
+```bash
+idf.py -p /dev/ttyACM0 flash
+```
+
+Flash and open the serial monitor in one command:
 
 ```bash
 idf.py -p /dev/ttyACM0 flash monitor
 ```
 
-Use `./switch-target.sh esp32s3` for the ESP32-S3. Replace `/dev/ttyACM0` if the board uses
-another port. Exit the ESP-IDF monitor with `Ctrl+]`.
+Exit the monitor with `Ctrl+]`.
 
-Use these commands when necessary:
+The boot log should contain these messages:
 
-```bash
-idf.py menuconfig       # edit the active target configuration
-idf.py reconfigure      # refresh CMake and managed components
-idf.py fullclean        # remove all generated build output
-idf.py size             # show application memory use
-idf.py size-components  # show memory use by component
+```text
+matrix=32x8 brightness=20% RF GPIO=7 LED GPIO=2
+WS281x matrix ready: 32x8, GRB, GPIO 2
+433 MHz raw receiver ready on GPIO 7
+matrix demo started
+startup complete
 ```
 
-## 17. Bring up the hardware
+## Configuration
 
-Test each boundary separately:
+Open the project settings with:
 
-1. Build the temporary driver functions.
-2. Flash the firmware.
-3. Confirm that the monitor shows `startup complete`.
-4. Implement only the LED driver.
-5. Show one fixed color at low brightness.
-6. Verify every matrix corner and the serpentine mapping.
-7. Disconnect or disable LED output updates.
-8. Implement raw RF pulse capture.
-9. Log several known transmitter messages.
-10. Implement and test the RF decoder.
-11. Add the command queue and LED task.
-12. Test RF reception during repeated LED updates.
-13. Measure supply voltage and current during the brightest allowed frame.
-14. Reboot the board many times and confirm consistent startup.
+```bash
+idf.py menuconfig
+```
 
-Do not debug RF decoding and LED timing at the same time. Prove each driver first.
+Open **RF LED matrix settings**. The active values are:
 
-## 18. Verification checklist
+| Setting | Value |
+|---|---:|
+| RF receiver data GPIO | 7 |
+| LED matrix data GPIO | 2 |
+| Matrix width | 32 |
+| Matrix height | 8 |
+| Brightness | 20% |
+| RF capture symbols | 128 |
+| Minimum pulse filter | 1 µs |
+| Maximum pulse duration | 10,000 µs |
 
-Before normal use, verify these items:
+After testing a change, copy the active configuration back to
+`sdkconfig.esp32s3` if you want to keep it as the project profile.
 
-- `idf.py --version` reports ESP-IDF 6.0.x.
-- Both target profiles build when both boards are supported.
-- The configured flash size matches each physical board.
-- No assigned GPIO conflicts with USB, flash, boot straps, or another driver.
-- The RF data voltage stays in the ESP32 input range.
-- The RF interrupt does not allocate memory or update LEDs.
-- The decoder rejects malformed and incomplete messages.
-- The matrix type, pixel format, and wiring order are correct.
-- The LED supply can provide the measured load.
-- The ESP32 and external supplies share ground.
-- A logic-level buffer is present when the panel requires 5 V data.
-- The brightness limit applies before the first full frame.
-- RF reception continues while the matrix updates.
+## RF capture notes
 
-## 19. Record the final hardware configuration
+The receiver output is a demodulated digital signal. The ESP32-S3 measures the
+high and low durations. It does not measure the 433 MHz carrier directly.
 
-Add this table to the project README and fill it before assembly:
+Begin protocol work with raw captures:
 
-| Item | Selected value |
-|---|---|
-| ESP32 board | |
-| ESP32 target | `esp32c6` or `esp32s3` |
-| Flash size | |
-| RF receiver model | |
-| RF receiver supply | |
-| RF data voltage | |
-| RF input GPIO | |
-| RF protocol | |
-| LED panel model | |
-| LED interface | serial pixel or HUB75 |
-| Matrix dimensions | |
-| Pixel order | |
-| LED data GPIO or HUB75 pin map | |
-| LED supply voltage | |
-| LED supply current rating | |
-| Logic-level buffer | |
-| Maximum firmware brightness | |
+1. Open the serial monitor.
+2. Press one transmitter button several times.
+3. Record the pulse widths and symbol counts.
+4. Compare repeated frames from the same button.
+5. Identify the preamble, bit timing, data length, and repeat pattern.
 
-This table is the source of truth for pin assignments, power checks, driver selection, and
-target configuration.
+Do not add protocol decoding until the raw frame pattern is known. The current
+firmware only reports frames and uses them as display events.
+
+## Power and safety checks
+
+Complete these checks before you give the transmitter to a child:
+
+1. Use a regulated 5 V supply for the matrix.
+2. Connect all grounds together.
+3. Confirm the receiver output voltage is 3.3 V or less.
+4. Add a logic-level buffer when the matrix needs 5 V data logic.
+5. Check the supply voltage at the far end of the matrix.
+6. Check the supply current during a bright frame.
+7. Keep the firmware brightness at 20%.
+
+A board reset during RF activity can indicate a power problem. Check the 5 V
+rail, ground connection, USB cable, and supply wiring before debugging the RF
+decoder.
+
+## Verification checklist
+
+Use this checklist after wiring or firmware changes:
+
+- The project builds for ESP32-S3.
+- The boot log reports GPIO 2 for LED data.
+- The boot log reports GPIO 7 for RF data.
+- The boot log reports a 20% brightness limit.
+- The matrix shows the rainbow animation.
+- The top-left LED is dim red when the receiver is idle.
+- A valid RF frame changes the top-left LED to green.
+- A valid RF frame produces an expanding matrix wave.
+- The serial monitor reports raw pulse widths.
+- The board does not reset during repeated RF activity.
+
+## Project files
+
+```text
+.
+├── CMakeLists.txt
+├── README.md
+├── docs.md
+├── dependencies.lock
+├── main/
+│   ├── CMakeLists.txt
+│   ├── Kconfig.projbuild
+│   ├── app_main.c
+│   ├── board_config.h
+│   ├── idf_component.yml
+│   ├── led_matrix.c
+│   ├── led_matrix.h
+│   ├── rf_receiver.c
+│   └── rf_receiver.h
+├── sdkconfig.defaults
+├── sdkconfig.esp32s3
+└── switch-target.sh
+```
+
+Generated files such as `build/`, `sdkconfig`, and `managed_components/` do not
+need to be committed. Commit `dependencies.lock` so later builds use the same
+component versions.
